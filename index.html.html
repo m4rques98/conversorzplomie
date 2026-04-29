@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Conversor ZPL Omie PRO - Gap Automático</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 24px; background: #f6f6f6; }
+  h1 { font-size: 22px; margin-top: 0; }
+  textarea { width: 100%; height: 220px; font-family: Consolas, monospace; font-size: 14px; box-sizing: border-box; }
+  input[type="text"], input[type="number"], select { width: 100%; padding: 10px; font-size: 15px; box-sizing: border-box; margin: 4px 0 10px 0; }
+  input[type="range"] { width: 100%; }
+  button { padding: 12px 18px; margin: 10px 8px 10px 0; cursor: pointer; border: 0; border-radius: 8px; background: #222; color: #fff; }
+  .box { background: white; padding: 18px; border-radius: 10px; margin-bottom: 16px; box-shadow: 0 2px 8px #0001; }
+  .hint { color: #555; font-size: 14px; }
+  .grid { display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr 90px; gap: 10px; align-items: end; }
+  .settings { display: grid; grid-template-columns: 1fr 120px; gap: 12px; align-items: center; margin-bottom: 12px; }
+  .row { border-bottom: 1px solid #ddd; padding: 10px 0; }
+  @media (max-width: 900px) { .grid, .settings { grid-template-columns: 1fr; } }
+  label { font-weight: bold; display:block; }
+  small { color:#666; display:block; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>Conversor ZPL Omie → Zebra 2 colunas PRO</h1>
+    <p class="hint">
+      Versão corrigida para etiquetas com espaço/gap entre uma linha e outra.
+      O modo padrão agora usa sensor de gap da impressora: a etiqueta tem 25 mm, e o espaço de 4 mm é detectado pela impressora.
+    </p>
+  </div>
+
+  <div class="box">
+    <h3>1) ZPL do Omie</h3>
+    <textarea id="input" placeholder="Cole aqui vários blocos ZPL, um após o outro. Cada produto deve começar com ^XA e terminar com ^XZ."></textarea>
+    <br>
+    <button onclick="lerDados()">Ler dados do ZPL</button>
+  </div>
+
+  <div class="box">
+    <h3>2) Ajustes de impressão</h3>
+
+    <label>Centralização horizontal X: <span id="posXLabel">55</span></label>
+    <small>Move as duas etiquetas para direita/esquerda. Padrão: 55. A etiqueta direita usa X + 320.</small>
+    <div class="settings">
+      <input type="range" min="0" max="100" value="55" id="posX" oninput="sincronizarX(this.value)">
+      <input type="number" min="0" max="100" value="55" id="posXNum" oninput="sincronizarX(this.value)">
+    </div>
+
+    <label>Modo de avanço vertical</label>
+    <small>
+      Use "Sensor GAP automático" para rolo/folha com espaço entre etiquetas. Esse é o recomendado para corrigir o desalinhamento progressivo.
+    </small>
+    <select id="modoAvanco" onchange="alternarModoAvanco()">
+      <option value="gap" selected>Sensor GAP automático - recomendado</option>
+      <option value="manual">Manual por ^LL</option>
+    </select>
+
+    <div id="manualBox" style="display:none;">
+      <label>Avanço vertical manual / ^LL em dots: <span id="llLabel">200</span></label>
+      <small>
+        Use apenas se o sensor GAP não estiver calibrado. Para etiqueta 25 mm em 203 dpi, comece em 200.
+      </small>
+      <div class="settings">
+        <input type="range" min="180" max="350" value="200" id="labelLength" oninput="sincronizarLL(this.value)">
+        <input type="number" min="180" max="350" value="200" id="labelLengthNum" oninput="sincronizarLL(this.value)">
+      </div>
+    </div>
+
+    <label>Deslocamento vertical do conteúdo Y: <span id="yLabel">20</span></label>
+    <small>Move o conteúdo dentro da etiqueta. Padrão: 10.</small>
+    <div class="settings">
+      <input type="range" min="0" max="30" value="20" id="posY" oninput="sincronizarY(this.value)">
+      <input type="number" min="0" max="30" value="20" id="posYNum" oninput="sincronizarY(this.value)">
+    </div>
+  </div>
+
+  <div class="box">
+    <h3>3) Revisar produtos e quantidades</h3>
+    <small>Quantidade = número de etiquetas individuais daquele produto. O conversor monta automaticamente as linhas com esquerda + direita.</small>
+    <div id="produtos"></div>
+    <button onclick="adicionarProdutoVazio()">Adicionar produto manualmente</button>
+  </div>
+
+  <div class="box">
+    <h3>4) Gerar ZPL final</h3>
+    <button onclick="converter()">Converter para impressão</button>
+    <button onclick="copiar()">Copiar resultado</button>
+    <textarea id="output" readonly></textarea>
+  </div>
+
+<script>
+let produtos = [];
+
+function alternarModoAvanco() {
+  const modo = document.getElementById("modoAvanco").value;
+  document.getElementById("manualBox").style.display = modo === "manual" ? "block" : "none";
+}
+
+function sincronizarX(valor) {
+  valor = parseInt(valor || 55);
+  if (valor < 0) valor = 0;
+  if (valor > 100) valor = 100;
+  document.getElementById("posX").value = valor;
+  document.getElementById("posXNum").value = valor;
+  document.getElementById("posXLabel").innerText = valor;
+}
+
+function sincronizarLL(valor) {
+  valor = parseInt(valor || 200);
+  if (valor < 180) valor = 180;
+  if (valor > 350) valor = 350;
+  document.getElementById("labelLength").value = valor;
+  document.getElementById("labelLengthNum").value = valor;
+  document.getElementById("llLabel").innerText = valor;
+}
+
+function sincronizarY(valor) {
+  valor = parseInt(valor || 10);
+  if (valor < 0) valor = 0;
+  if (valor > 30) valor = 30;
+  document.getElementById("posY").value = valor;
+  document.getElementById("posYNum").value = valor;
+  document.getElementById("yLabel").innerText = valor;
+}
+
+function limpar(v) {
+  return (v || "")
+    .replace(/\^FH\\/g, "")
+    .replace(/\\C7/g, "Ç")
+    .replace(/\\E7/g, "ç")
+    .replace(/\\C3/g, "Ã")
+    .replace(/\\A3/g, "ã")
+    .trim();
+}
+
+function extrairBlocosZPL(texto) {
+  return texto.match(/\^XA[\s\S]*?\^XZ/g) || [];
+}
+
+function extrairFDs(bloco) {
+  return [...bloco.matchAll(/\^FD([\s\S]*?)\^FS/g)]
+    .map(m => limpar(m[1]))
+    .filter(Boolean);
+}
+
+function ehPreco(v) { return /R\$\s*\d/i.test(v); }
+function ehCodigo(v) { return /^[0-9]{6,20}$/.test((v || "").replace(/\s/g, "")); }
+
+function cortarTexto(texto, limite) {
+  texto = limpar(texto);
+  if (texto.length <= limite) return texto;
+  return texto.substring(0, limite).trim();
+}
+
+function extrairDados(bloco) {
+  const fds = extrairFDs(bloco);
+  const preco = fds.find(ehPreco) || "R$ 0,00";
+  const codigo = (fds.map(v => v.replace(/\s/g, "")).find(ehCodigo)) || "123456789";
+  const textos = fds.filter(v => !ehPreco(v) && !ehCodigo(v.replace(/\s/g, "")));
+
+  return {
+    nome: cortarTexto(textos[0] || "Produto", 27),
+    desc: cortarTexto(textos[1] || "Descricao", 24),
+    codigo: codigo,
+    preco: preco,
+    qtd: 1
+  };
+}
+
+function lerDados() {
+  const texto = document.getElementById("input").value;
+  const blocos = extrairBlocosZPL(texto);
+
+  if (blocos.length === 0) {
+    alert("Não achei nenhum ZPL começando com ^XA e terminando com ^XZ.");
+    return;
+  }
+
+  produtos = blocos.map(extrairDados);
+  renderizarProdutos();
+}
+
+function adicionarProdutoVazio() {
+  produtos.push({nome:"Produto", desc:"Descricao", codigo:"123456789", preco:"R$ 0,00", qtd:1});
+  renderizarProdutos();
+}
+
+function removerProduto(i) {
+  produtos.splice(i, 1);
+  renderizarProdutos();
+}
+
+function atualizarProduto(i, campo, valor) {
+  produtos[i][campo] = valor;
+}
+
+function escapeHtml(str) {
+  return String(str || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function renderizarProdutos() {
+  const div = document.getElementById("produtos");
+  if (produtos.length === 0) {
+    div.innerHTML = "<p class='hint'>Nenhum produto carregado.</p>";
+    return;
+  }
+
+  div.innerHTML = produtos.map((p, i) => `
+    <div class="row">
+      <b>Produto ${i + 1}</b>
+      <div class="grid">
+        <div>
+          <label>Nome</label>
+          <input type="text" maxlength="27" value="${escapeHtml(p.nome)}" oninput="atualizarProduto(${i}, 'nome', this.value)">
+        </div>
+        <div>
+          <label>Descrição</label>
+          <input type="text" maxlength="24" value="${escapeHtml(p.desc)}" oninput="atualizarProduto(${i}, 'desc', this.value)">
+        </div>
+        <div>
+          <label>Código</label>
+          <input type="text" value="${escapeHtml(p.codigo)}" oninput="atualizarProduto(${i}, 'codigo', this.value)">
+        </div>
+        <div>
+          <label>Preço</label>
+          <input type="text" value="${escapeHtml(p.preco)}" oninput="atualizarProduto(${i}, 'preco', this.value)">
+        </div>
+        <div>
+          <label>Qtd.</label>
+          <input type="number" min="1" value="${p.qtd}" oninput="atualizarProduto(${i}, 'qtd', this.value)">
+        </div>
+      </div>
+      <button onclick="removerProduto(${i})">Remover</button>
+    </div>
+  `).join("");
+}
+
+function linhaEtiqueta(dados, x, yBase) {
+  const nome = cortarTexto(dados.nome || "Produto", 27);
+  const desc = cortarTexto(dados.desc || "Descricao", 24);
+  const codigo = String(dados.codigo || "123456789").replace(/\s/g, "");
+  const preco = dados.preco || "R$ 0,00";
+
+  return [
+    `^FO${x},${yBase}^A0N,25,25^FD${nome}^FS`,
+    `^FO${x},${yBase + 30}^A0N,20,20^FD${desc}^FS`,
+    `^FO${x},${yBase + 50}^BY1.2,2,50^BCN,50,N,N,N^FD${codigo}^FS`,
+    `^FO${x},${yBase + 105}^A0N,22,22^FD${codigo}^FS`,
+    `^FO${x},${yBase + 130}^A0N,30,30^FD${preco}^FS`
+  ].join("\n");
+}
+
+function blocoLinha(esq, dir, xEsq, ll, yBase, modoAvanco) {
+  const xDir = xEsq + 320;
+
+  let cabecalho = [
+    "^XA",
+    "^PW640",
+    "^LH0,0",
+    "^LT0",
+    "^CI28",
+    `^LS${yBase}`
+  ];
+
+  if (modoAvanco === "gap") {
+    cabecalho.push("^MNY");
+    cabecalho.push("^LL240");
+  } else {
+    cabecalho.push(`^LL${ll}`);
+  }
+
+  let partes = [
+    ...cabecalho,
+    "^FX === LINHA / ETIQUETA ESQUERDA ===",
+    linhaEtiqueta(esq, xEsq, yBase)
+  ];
+
+  if (dir) {
+    partes.push("^FX === LINHA / ETIQUETA DIREITA ===");
+    partes.push(linhaEtiqueta(dir, xDir, yBase));
+  }
+
+  partes.push("^PQ1,0,1,Y");
+  partes.push("^XZ");
+  return partes.join("\n");
+}
+
+function converter() {
+  if (produtos.length === 0 && document.getElementById("input").value) {
+    lerDados();
+  }
+
+  const xEsq = parseInt(document.getElementById("posX").value || 55);
+  const ll = parseInt(document.getElementById("labelLength").value || 200);
+  const yBase = parseInt(document.getElementById("posY").value || 10);
+  const modoAvanco = document.getElementById("modoAvanco").value;
+
+  let fila = [];
+
+  produtos.forEach(p => {
+    const qtd = Math.max(1, parseInt(p.qtd || 1));
+    for (let i = 0; i < qtd; i++) {
+      fila.push({...p});
+    }
+  });
+
+  let blocos = [];
+  for (let i = 0; i < fila.length; i += 2) {
+    blocos.push(blocoLinha(fila[i], fila[i + 1], xEsq, ll, yBase, modoAvanco));
+  }
+
+  document.getElementById("output").value = blocos.join("\n\n");
+}
+
+function copiar() {
+  const out = document.getElementById("output");
+  out.select();
+  document.execCommand("copy");
+  alert("ZPL copiado.");
+}
+</script>
+</body>
+</html>
